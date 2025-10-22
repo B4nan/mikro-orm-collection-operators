@@ -1,51 +1,74 @@
-import { Entity, MikroORM, PrimaryKey, Property } from '@mikro-orm/sqlite';
+import { defineEntity, p, MikroORM } from '@mikro-orm/sqlite';
 
-@Entity()
-class User {
+const Author = defineEntity({
+  name: 'Author',
+  properties: {
+    id: p.integer().primary(),
+    name: p.string(),
+    email: p.string().unique(),
+    books: () => p.oneToMany(Book).mappedBy('author'),
+  },
+});
 
-  @PrimaryKey()
-  id!: number;
+const Book = defineEntity({
+  name: 'Book',
+  properties: {
+    id: p.integer().primary(),
+    title: p.string(),
+    author: () => p.manyToOne(Author).inversedBy('books'),
+    tags: () => p.manyToMany(BookTag),
+  },
+});
 
-  @Property()
-  name: string;
+const BookTag = defineEntity({
+  name: 'BookTag',
+  properties: {
+    id: p.integer().primary(),
+    name: p.string(),
+    books: () => p.manyToMany(Book).mappedBy('tags'),
+  },
+});
 
-  @Property({ unique: true })
-  email: string;
+test('collection operators', async () => {
+  const orm = MikroORM.initSync({
+    entities: [Author, Book, BookTag],
+    dbName: ':memory:',
+    debug: true,
+  });
+  await orm.schema.createSchema();
+  const em = orm.em.fork();
 
-  constructor(name: string, email: string) {
-    this.name = name;
-    this.email = email;
+  await em.insertMany(Author, [
+    { id: 1, name: 'Author 1', email: 'author1@example.com' },
+    { id: 2, name: 'Author 2', email: 'author2@example.com' },
+  ]);
+
+  await em.insertMany(BookTag, [
+    { id: 1, name: 'Fiction' },
+    { id: 2, name: 'Science' },
+    { id: 3, name: 'Fantasy' },
+  ]);
+
+  await em.insertMany(Book, [
+    { id: 1, title: 'Book 1', author: 1, tags: [1, 3] },
+    { id: 2, title: 'Book 2', author: 1, tags: [2, 3] },
+    { id: 3, title: 'Book 3', author: 2, tags: [1, 2, 3] },
+  ]);
+
+  // returns 'Book 1' and 'Book 3'
+  const books = await em.findAll(Book, {
+    where: {
+      $and: [
+        { tags: { $some: { name: 'Fiction' } } },
+        { tags: { $some: { name: 'Fantasy' } } },
+      ],
+    },
+    populate: ['tags'],
+  });
+
+  for (const book of books) {
+    console.log(book.title, book.tags.map(t => t.name));
   }
 
-}
-
-let orm: MikroORM;
-
-beforeAll(async () => {
-  orm = await MikroORM.init({
-    dbName: ':memory:',
-    entities: [User],
-    debug: ['query', 'query-params'],
-    allowGlobalContext: true, // only for testing
-  });
-  await orm.schema.refreshDatabase();
-});
-
-afterAll(async () => {
-  await orm.close(true);
-});
-
-test('basic CRUD example', async () => {
-  orm.em.create(User, { name: 'Foo', email: 'foo' });
-  await orm.em.flush();
-  orm.em.clear();
-
-  const user = await orm.em.findOneOrFail(User, { email: 'foo' });
-  expect(user.name).toBe('Foo');
-  user.name = 'Bar';
-  orm.em.remove(user);
-  await orm.em.flush();
-
-  const count = await orm.em.count(User, { email: 'foo' });
-  expect(count).toBe(0);
+  await orm.close();
 });
